@@ -26,7 +26,21 @@ async function getRobloxIdFromUsername(username) {
   return match ? { id: match.id, name: match.name } : null;
 }
 
+client.once("ready", async () => {
+  console.log(`[Bot] Online as ${client.user.tag}`);
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      await guild.members.fetch();
+      console.log(`[Bot] Cached members for guild: ${guild.name}`);
+    } catch (err) {
+      console.error(`[Bot] Failed to cache members for ${guild.name}:`, err.message);
+    }
+  }
+});
+
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
+  console.log(`[Bot] guildMemberUpdate fired for ${newMember.user.tag}`);
+
   const hadRole = oldMember.roles.cache.has(BLACKLIST_ROLE_ID);
   const hasRole = newMember.roles.cache.has(BLACKLIST_ROLE_ID);
   if (hadRole || !hasRole) return;
@@ -58,10 +72,6 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
   } catch (error) {
     console.error(`[Bot] Error processing blacklist for ${displayName}:`, error.message);
   }
-});
-
-client.once("ready", () => {
-  console.log(`[Bot] Online as ${client.user.tag}`);
 });
 
 client.login(DISCORD_TOKEN);
