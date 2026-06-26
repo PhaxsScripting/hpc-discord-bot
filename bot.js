@@ -16,6 +16,12 @@ const client = new Client({
   partials: [Partials.GuildMember]
 });
 
+function extractRobloxUsername(displayName) {
+  const parts = displayName.split("|");
+  const lastPart = parts[parts.length - 1].trim();
+  return lastPart || displayName.trim();
+}
+
 async function getRobloxIdFromUsername(username) {
   const response = await axios.post(
     "https://users.roblox.com/v1/usernames/users",
@@ -28,12 +34,13 @@ async function getRobloxIdFromUsername(username) {
 
 async function processBlacklistCandidate(member) {
   const displayName = member.displayName;
-  console.log(`[Bot] Processing blacklist candidate: ${member.user.tag} (display: ${displayName})`);
+  const robloxUsername = extractRobloxUsername(displayName);
+  console.log(`[Bot] Processing blacklist candidate: ${member.user.tag} (display: ${displayName}, parsed: ${robloxUsername})`);
 
   try {
-    const robloxUser = await getRobloxIdFromUsername(displayName);
+    const robloxUser = await getRobloxIdFromUsername(robloxUsername);
     if (!robloxUser) {
-      console.error(`[Bot] No Roblox user found for username "${displayName}"`);
+      console.error(`[Bot] No Roblox user found for username "${robloxUsername}" (from display "${displayName}")`);
       return;
     }
 
