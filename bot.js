@@ -4,7 +4,7 @@ const axios = require("axios");
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const BOT_SECRET = process.env.BOT_SECRET;      // Must match Railway variable
 const API_URL = process.env.API_URL;            // Your Vercel backend URL
-const BLACKLIST_ROLE_ID = "REPLACE_WITH_YOUR_ROLE_ID"; // ← VERIFY THIS IS YOUR ACTUAL ROLE ID!
+const BLACKLIST_ROLE_ID = "1195557302250524764"; // ← VERIFY THIS IS YOUR ACTUAL ROLE ID!
 
 const client = new Client({
   intents: [
