@@ -32,17 +32,22 @@ async function getRobloxIdFromUsername(username) {
   return match ? { id: match.id, name: match.name } : null;
 }
 
-async function processBlacklistCandidate(member) {
+async function resolveRobloxUser(member) {
   const displayName = member.displayName;
   const robloxUsername = extractRobloxUsername(displayName);
-  console.log(`[Bot] Processing blacklist candidate: ${member.user.tag} (display: ${displayName}, parsed: ${robloxUsername})`);
+  const robloxUser = await getRobloxIdFromUsername(robloxUsername);
+  if (!robloxUser) {
+    console.error(`[Bot] No Roblox user found for username "${robloxUsername}" (from display "${displayName}")`);
+    return null;
+  }
+  return robloxUser;
+}
 
+async function addBlacklistCandidate(member) {
+  console.log(`[Bot] Adding blacklist candidate: ${member.user.tag} (display: ${member.displayName})`);
   try {
-    const robloxUser = await getRobloxIdFromUsername(robloxUsername);
-    if (!robloxUser) {
-      console.error(`[Bot] No Roblox user found for username "${robloxUsername}" (from display "${displayName}")`);
-      return;
-    }
+    const robloxUser = await resolveRobloxUser(member);
+    if (!robloxUser) return;
 
     const response = await axios.post(
       `${API_URL}/api/blacklist/add`,
@@ -56,10 +61,30 @@ async function processBlacklistCandidate(member) {
     );
 
     if (response.data.success) {
-      console.log(`[Bot] Blacklisted Roblox user ${robloxUser.name} (${robloxUser.id}) — flagged via ${displayName}`);
+      console.log(`[Bot] Blacklisted Roblox user ${robloxUser.name} (${robloxUser.id}) — flagged via ${member.displayName}`);
     }
   } catch (error) {
-    console.error(`[Bot] Error processing blacklist for ${displayName}:`, error.message);
+    console.error(`[Bot] Error adding blacklist for ${member.displayName}:`, error.message);
+  }
+}
+
+async function removeBlacklistCandidate(member) {
+  console.log(`[Bot] Removing blacklist candidate: ${member.user.tag} (display: ${member.displayName})`);
+  try {
+    const robloxUser = await resolveRobloxUser(member);
+    if (!robloxUser) return;
+
+    const response = await axios.post(
+      `${API_URL}/api/blacklist/remove`,
+      { robloxId: robloxUser.id },
+      { headers: { "Authorization": `Bearer ${BOT_SECRET}` } }
+    );
+
+    if (response.data.success) {
+      console.log(`[Bot] Un-blacklisted Roblox user ${robloxUser.name} (${robloxUser.id}) — role removed from ${member.displayName}`);
+    }
+  } catch (error) {
+    console.error(`[Bot] Error removing blacklist for ${member.displayName}:`, error.message);
   }
 }
 
@@ -79,7 +104,7 @@ client.once("ready", async () => {
 
       console.log(`[Bot] Sweeping ${role.members.size} existing member(s) with blacklist role`);
       for (const member of role.members.values()) {
-        await processBlacklistCandidate(member);
+        await addBlacklistCandidate(member);
       }
     } catch (err) {
       console.error(`[Bot] Failed to cache members for ${guild.name}:`, err.message);
@@ -88,13 +113,16 @@ client.once("ready", async () => {
 });
 
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
-  console.log(`[Bot] guildMemberUpdate fired for ${newMember.user.tag}`);
-
   const hadRole = oldMember.roles.cache.has(BLACKLIST_ROLE_ID);
   const hasRole = newMember.roles.cache.has(BLACKLIST_ROLE_ID);
-  if (hadRole || !hasRole) return;
 
-  await processBlacklistCandidate(newMember);
+  if (!hadRole && hasRole) {
+    console.log(`[Bot] Blacklist role given to ${newMember.user.tag}`);
+    await addBlacklistCandidate(newMember);
+  } else if (hadRole && !hasRole) {
+    console.log(`[Bot] Blacklist role removed from ${newMember.user.tag}`);
+    await removeBlacklistCandidate(newMember);
+  }
 });
 
 client.login(DISCORD_TOKEN);
