@@ -232,7 +232,10 @@ async function removeBlacklistCandidate(member) {
 
     const response = await axios.post(
       `${API_URL}/api/blacklist/remove`,
-      { robloxId: robloxUser.id },
+      {
+        robloxId: robloxUser.id,
+        removedByDiscordUsername: "Discord role removed manually"
+      },
       { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
     );
 
@@ -283,6 +286,50 @@ function buildPageButtons(page, totalPages) {
       .setDisabled(page === 0),
     new ButtonBuilder()
       .setCustomId("bl_next")
+      .setLabel("Next ▶")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page >= totalPages - 1)
+  );
+}
+
+// ─── /blacklisthistory embed builders ────────────────────────────────────────
+
+const HISTORY_ACTION_EMOJI = { added: "🚫", removed: "🔓", reason_updated: "📝" };
+const HISTORY_ACTION_LABEL = { added: "Added", removed: "Removed", reason_updated: "Reason updated" };
+
+function buildHistoryEmbed(entries, page, totalPages) {
+  const start       = page * PAGE_SIZE;
+  const pageEntries = entries.slice(start, start + PAGE_SIZE);
+
+  const description = pageEntries.map((entry) => {
+    const emoji = HISTORY_ACTION_EMOJI[entry.action] || "•";
+    const label = HISTORY_ACTION_LABEL[entry.action] || entry.action;
+    const who   = entry.action === "removed"
+      ? (entry.removedBy || "Unknown")
+      : (entry.discordUsername || "Unknown");
+    const when  = entry.timestamp ? `<t:${Math.floor(new Date(entry.timestamp).getTime() / 1000)}:R>` : "Unknown time";
+    const name  = entry.robloxUsername || entry.robloxId || "Unknown";
+    const extra = entry.action === "reason_updated" && entry.reason ? `\n　Reason: ${entry.reason}` : "";
+    return `${emoji} **${label}** — ${name} (\`${entry.robloxId}\`)\n　By: ${who} • ${when}${extra}`;
+  }).join("\n\n");
+
+  return new EmbedBuilder()
+    .setTitle("📜 Blacklist Audit Log")
+    .setDescription(description || "No history yet.")
+    .setColor(0x5865f2)
+    .setFooter({ text: `Page ${page + 1} of ${totalPages} • ${entries.length} total events` })
+    .setTimestamp();
+}
+
+function buildHistoryButtons(page, totalPages) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("hist_prev")
+      .setLabel("◀ Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page === 0),
+    new ButtonBuilder()
+      .setCustomId("hist_next")
       .setLabel("Next ▶")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(page >= totalPages - 1)
@@ -343,7 +390,11 @@ async function checkExpiredBlacklists() {
       try {
         await axios.post(
           `${API_URL}/api/blacklist/remove`,
-          { robloxId: entry.robloxId },
+          {
+            robloxId: entry.robloxId,
+            removedByDiscordUsername: "System (expired)",
+            removalReason: "Temporary blacklist expired"
+          },
           { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
         );
         await sendWebhook(WEBHOOK_BLACKLIST,
@@ -408,6 +459,12 @@ client.once("ready", async () => {
           opt.setName("username").setDescription("Roblox username").setRequired(true)
         ),
       new SlashCommandBuilder()
+        .setName("unblacklistuser")
+        .setDescription("Remove a Discord member's blacklist by @mention — resolves their Roblox account via RoVer")
+        .addUserOption(opt =>
+          opt.setName("user").setDescription("Discord member to unblacklist").setRequired(true)
+        ),
+      new SlashCommandBuilder()
         .setName("removebyrobloxid")
         .setDescription("Remove a blacklisted user directly by their Roblox ID (bypasses username lookup)")
         .addStringOption(opt =>
@@ -430,7 +487,10 @@ client.once("ready", async () => {
         ),
       new SlashCommandBuilder()
         .setName("checkblacklist")
-        .setDescription("Show all currently blacklisted users")
+        .setDescription("Show all currently blacklisted users"),
+      new SlashCommandBuilder()
+        .setName("blacklisthistory")
+        .setDescription("Show the audit log of blacklist additions, removals, and reason changes")
     ].map(cmd => cmd.toJSON());
 
     const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
@@ -549,32 +609,62 @@ client.on("interactionCreate", async (interaction) => {
 
   // ── Pagination buttons (/checkblacklist pages) ──
   if (interaction.isButton()) {
-    if (!interaction.customId.startsWith("bl_")) return;
+    if (interaction.customId.startsWith("bl_")) {
+      const embed       = interaction.message.embeds[0];
+      if (!embed) return;
 
-    const embed       = interaction.message.embeds[0];
-    if (!embed) return;
+      const footerMatch = embed.footer?.text?.match(/Page (\d+) of (\d+)/);
+      if (!footerMatch) return;
 
-    const footerMatch = embed.footer?.text?.match(/Page (\d+) of (\d+)/);
-    if (!footerMatch) return;
+      let page           = parseInt(footerMatch[1]) - 1;
+      const totalPages   = parseInt(footerMatch[2]);
 
-    let page           = parseInt(footerMatch[1]) - 1;
-    const totalPages   = parseInt(footerMatch[2]);
+      if (interaction.customId === "bl_prev") page = Math.max(0, page - 1);
+      if (interaction.customId === "bl_next") page = Math.min(totalPages - 1, page + 1);
 
-    if (interaction.customId === "bl_prev") page = Math.max(0, page - 1);
-    if (interaction.customId === "bl_next") page = Math.min(totalPages - 1, page + 1);
-
-    try {
-      const kvResponse = await axios.get(
-        `${API_URL}/api/blacklist/list`,
-        { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
-      );
-      const entries  = kvResponse.data?.entries ?? [];
-      const newEmbed = buildBlacklistEmbed(entries, page, totalPages);
-      const newRow   = buildPageButtons(page, totalPages);
-      return interaction.update({ embeds: [newEmbed], components: [newRow] });
-    } catch (err) {
-      return interaction.reply({ content: `❌ Failed to load page: ${err.message}`, ephemeral: true });
+      try {
+        const kvResponse = await axios.get(
+          `${API_URL}/api/blacklist/list`,
+          { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
+        );
+        const entries  = kvResponse.data?.entries ?? [];
+        const newEmbed = buildBlacklistEmbed(entries, page, totalPages);
+        const newRow   = buildPageButtons(page, totalPages);
+        return interaction.update({ embeds: [newEmbed], components: [newRow] });
+      } catch (err) {
+        return interaction.reply({ content: `❌ Failed to load page: ${err.message}`, ephemeral: true });
+      }
     }
+
+    // ── Pagination buttons (/blacklisthistory pages) ──
+    if (interaction.customId.startsWith("hist_")) {
+      const embed       = interaction.message.embeds[0];
+      if (!embed) return;
+
+      const footerMatch = embed.footer?.text?.match(/Page (\d+) of (\d+)/);
+      if (!footerMatch) return;
+
+      let page           = parseInt(footerMatch[1]) - 1;
+      const totalPages   = parseInt(footerMatch[2]);
+
+      if (interaction.customId === "hist_prev") page = Math.max(0, page - 1);
+      if (interaction.customId === "hist_next") page = Math.min(totalPages - 1, page + 1);
+
+      try {
+        const histResponse = await axios.get(
+          `${API_URL}/api/blacklist/history`,
+          { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
+        );
+        const entries  = histResponse.data?.entries ?? [];
+        const newEmbed = buildHistoryEmbed(entries, page, totalPages);
+        const newRow   = buildHistoryButtons(page, totalPages);
+        return interaction.update({ embeds: [newEmbed], components: [newRow] });
+      } catch (err) {
+        return interaction.reply({ content: `❌ Failed to load page: ${err.message}`, ephemeral: true });
+      }
+    }
+
+    return;
   }
 
   if (!interaction.isChatInputCommand()) return;
@@ -739,7 +829,11 @@ client.on("interactionCreate", async (interaction) => {
     try {
       const response = await axios.post(
         `${API_URL}/api/blacklist/remove`,
-        { robloxId },
+        {
+          robloxId,
+          removedByDiscordId: interaction.user.id,
+          removedByDiscordUsername: interaction.user.tag
+        },
         { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
       );
 
@@ -913,7 +1007,11 @@ client.on("interactionCreate", async (interaction) => {
     try {
       const response = await axios.post(
         `${API_URL}/api/blacklist/remove`,
-        { robloxId: robloxUser.id },
+        {
+          robloxId: robloxUser.id,
+          removedByDiscordId: interaction.user.id,
+          removedByDiscordUsername: interaction.user.tag
+        },
         { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
       );
 
@@ -925,6 +1023,98 @@ client.on("interactionCreate", async (interaction) => {
     } catch (err) {
       await sendWebhook(WEBHOOK_COMMANDS, `${timestamp()} ❌ \`/unblacklist ${username}\` — backend error: ${err.message}`);
       return interaction.editReply(`❌ Backend error: ${err.message}`);
+    }
+  }
+
+  // ══════════════════════════════════════════════════
+  //  /unblacklistuser <@mention>
+  // ══════════════════════════════════════════════════
+  if (cmd === "unblacklistuser") {
+    const targetUser = interaction.options.getUser("user");
+
+    await interaction.deferReply({ ephemeral: true });
+    await sendWebhook(WEBHOOK_COMMANDS, `${timestamp()} 🔧 **${interaction.user.tag}** ran \`/unblacklistuser ${targetUser.tag}\``);
+
+    // Same resolution strategy as /blacklistuser: RoVer first, nickname-parse fallback.
+    let robloxUser = await getRobloxViaRover(targetUser.id);
+    if (!robloxUser) {
+      try {
+        const targetMember     = await interaction.guild.members.fetch(targetUser.id);
+        const fallbackUsername = extractRobloxUsername(targetMember.displayName);
+        const fallbackResult   = await getRobloxIdFromUsername(fallbackUsername);
+        if (fallbackResult && fallbackResult.name.toLowerCase() === fallbackUsername.toLowerCase()) {
+          robloxUser = fallbackResult;
+        }
+      } catch (_) {}
+    }
+
+    if (!robloxUser) {
+      await sendWebhook(WEBHOOK_COMMANDS, `${timestamp()} ⚠️ \`/unblacklistuser ${targetUser.tag}\` — could not resolve a Roblox account.`);
+      return interaction.editReply(`⚠️ Could not resolve a Roblox account for ${targetUser.tag}. Try \`/unblacklist\` by username or \`/removebyrobloxid\` if you know their Roblox ID.`);
+    }
+
+    const alreadyBlacklisted = await isAlreadyBlacklisted(robloxUser.id);
+    if (!alreadyBlacklisted) {
+      return interaction.editReply(`ℹ️ **${robloxUser.name}** is not currently blacklisted.`);
+    }
+
+    try {
+      const response = await axios.post(
+        `${API_URL}/api/blacklist/remove`,
+        {
+          robloxId: robloxUser.id,
+          removedByDiscordId: interaction.user.id,
+          removedByDiscordUsername: interaction.user.tag
+        },
+        { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
+      );
+
+      if (response.data.success) {
+        await sendWebhook(WEBHOOK_COMMANDS,
+          `${timestamp()} 🔓 \`/unblacklistuser\` — **${robloxUser.name}** (\`${robloxUser.id}\`), Discord: ${targetUser.tag}, removed by **${interaction.user.tag}**`);
+        await sendWebhook(WEBHOOK_BLACKLIST,
+          `${timestamp()} 🔓 Un-blacklisted **${robloxUser.name}** (\`${robloxUser.id}\`) — removed via \`/unblacklistuser\` by **${interaction.user.tag}**`);
+
+        // Best-effort: also strip the Discord role if they still have it.
+        try {
+          const member = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
+          if (member?.roles?.cache?.has(BLACKLIST_ROLE_ID)) {
+            await member.roles.remove(BLACKLIST_ROLE_ID);
+          }
+        } catch (_) {}
+
+        return interaction.editReply(`✅ Removed **${robloxUser.name}** (${robloxUser.id}) — Discord: ${targetUser.tag} from the blacklist.`);
+      }
+    } catch (err) {
+      await sendWebhook(WEBHOOK_COMMANDS, `${timestamp()} ❌ \`/unblacklistuser ${targetUser.tag}\` — backend error: ${err.message}`);
+      return interaction.editReply(`❌ Backend error: ${err.message}`);
+    }
+  }
+
+  // ══════════════════════════════════════════════════
+  //  /blacklisthistory
+  // ══════════════════════════════════════════════════
+  if (cmd === "blacklisthistory") {
+    await interaction.deferReply({ ephemeral: true });
+    await sendWebhook(WEBHOOK_COMMANDS, `${timestamp()} 🔍 **${interaction.user.tag}** ran \`/blacklisthistory\``);
+
+    try {
+      const histResponse = await axios.get(
+        `${API_URL}/api/blacklist/history`,
+        { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
+      );
+      const entries = histResponse.data?.entries ?? [];
+
+      if (entries.length === 0) {
+        return interaction.editReply({ content: "📜 No audit log entries yet." });
+      }
+
+      const totalPages = Math.ceil(entries.length / PAGE_SIZE);
+      const embed       = buildHistoryEmbed(entries, 0, totalPages);
+      const row         = buildHistoryButtons(0, totalPages);
+      return interaction.editReply({ embeds: [embed], components: [row] });
+    } catch (err) {
+      return interaction.editReply({ content: `❌ Could not fetch audit log: ${err.message}` });
     }
   }
 });
