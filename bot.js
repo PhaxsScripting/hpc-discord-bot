@@ -94,10 +94,15 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+let roverCooldownUntil = 0;
+const ROVER_MAX_RETRY_WAIT_MS = 5000; // never block longer than this on a single call
+
 // Looks up a Discord user's linked Roblox account via RoVer.
 // Works for ANY verified member, not just ones with a RANK | Username nickname.
 async function getRobloxViaRover(discordId, retrying = false) {
   if (!GUILD_ID || !ROVER_API_KEY) return null;
+  if (Date.now() < roverCooldownUntil) return null; // skip silently while on cooldown — no wasted requests
+
   try {
     const res = await axios.get(
       `https://registry.rover.link/api/guilds/${GUILD_ID}/discord-to-roblox/${discordId}`,
@@ -108,11 +113,22 @@ async function getRobloxViaRover(discordId, retrying = false) {
     const userRes = await axios.get(`https://users.roblox.com/v1/users/${res.data.robloxId}`);
     return { id: res.data.robloxId, name: userRes.data?.name ?? String(res.data.robloxId) };
   } catch (err) {
-    if (err.response?.status === 429 && !retrying) {
-      const retryAfterSec = Number(err.response.headers?.["retry-after"]) || 2;
-      console.warn(`[Bot] RoVer rate limited on Discord ID ${discordId} — retrying in ${retryAfterSec}s`);
-      await sleep(retryAfterSec * 1000);
-      return getRobloxViaRover(discordId, true);
+    if (err.response?.status === 429) {
+      const retryAfterMs = (Number(err.response.headers?.["retry-after"]) || 2) * 1000;
+
+      if (retryAfterMs > ROVER_MAX_RETRY_WAIT_MS) {
+        // Long cooldown (minutes/hours) — never block on this. Disable RoVer until it passes
+        // and fall back to nickname parsing for everyone in the meantime.
+        roverCooldownUntil = Date.now() + retryAfterMs;
+        console.warn(`[Bot] RoVer returned a long cooldown (${Math.round(retryAfterMs / 1000)}s) — disabling RoVer lookups until ${new Date(roverCooldownUntil).toISOString()}, falling back to nickname parsing.`);
+        return null;
+      }
+
+      if (!retrying) {
+        console.warn(`[Bot] RoVer rate limited on Discord ID ${discordId} — retrying in ${Math.round(retryAfterMs / 1000)}s`);
+        await sleep(retryAfterMs);
+        return getRobloxViaRover(discordId, true);
+      }
     }
     // 404 just means not verified — anything else is a real API issue, both resolve to null
     console.log(`[Bot] RoVer lookup miss for Discord ID ${discordId}: ${err.message}`);
