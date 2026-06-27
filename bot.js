@@ -207,6 +207,7 @@ client.once("ready", async () => {
 
     const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+    console.log("[Bot] Commands force updated");
     console.log("[Bot] Slash commands registered");
   } catch (err) {
     console.error("[Bot] Failed to register slash commands:", err.message);
