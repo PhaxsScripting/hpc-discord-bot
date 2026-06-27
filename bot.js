@@ -165,10 +165,7 @@ client.once("ready", async () => {
         ),
       new SlashCommandBuilder()
         .setName("checkblacklist")
-        .setDescription("Check if a Roblox user is currently blacklisted")
-        .addStringOption(opt =>
-          opt.setName("username").setDescription("Roblox username").setRequired(true)
-        )
+        .setDescription("Show all currently blacklisted users")
     ].map(cmd => cmd.toJSON());
 
     const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
@@ -192,12 +189,10 @@ client.once("ready", async () => {
       const roleMembers = role.members;
       console.log(`[Bot] Sweeping ${roleMembers.size} member(s) with blacklist role`);
 
-      // Forward pass — blacklist anyone with the role not yet in KV
       for (const member of roleMembers.values()) {
         await addBlacklistCandidate(member, true);
       }
 
-      // Reverse pass — remove anyone in KV who no longer has the role
       try {
         const kvResponse = await axios.get(
           `${API_URL}/api/blacklist/list`,
@@ -260,35 +255,25 @@ client.on("interactionCreate", async (interaction) => {
   const username = interaction.options.getString("username");
 
   if (interaction.commandName === "checkblacklist") {
-    await interaction.deferReply({ ephemeral: true });
-    await sendWebhook(WEBHOOK_COMMANDS, `${timestamp()} 🔍 **${interaction.user.tag}** ran \`/checkblacklist ${username}\``);
-
-    let robloxUser;
-    try {
-      robloxUser = await getRobloxIdFromUsername(username);
-    } catch (err) {
-      return interaction.editReply(`❌ Roblox API error: ${err.message}`);
-    }
-
-    if (!robloxUser) {
-      return interaction.editReply(`⚠️ Could not find a Roblox account for **"${username}"**.`);
-    }
-
-    if (robloxUser.name.toLowerCase() !== username.toLowerCase()) {
-      return interaction.editReply(`⚠️ Roblox returned **${robloxUser.name}** for **"${username}"** — possible renamed account. Check manually.`);
-    }
+    await interaction.deferReply();
+    await sendWebhook(WEBHOOK_COMMANDS, `${timestamp()} 🔍 **${interaction.user.tag}** ran \`/checkblacklist\``);
 
     try {
-      const checkResponse = await axios.get(`${API_URL}/api/check/${robloxUser.id}`);
-      const data = checkResponse.data;
+      const kvResponse = await axios.get(
+        `${API_URL}/api/blacklist/list`,
+        { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
+      );
 
-      if (data?.blacklisted) {
-        return interaction.editReply(`🔴 **${robloxUser.name}** (\`${robloxUser.id}\`) is **blacklisted**.`);
-      } else {
-        return interaction.editReply(`🟢 **${robloxUser.name}** (\`${robloxUser.id}\`) is **not blacklisted**.`);
+      const ids = kvResponse.data?.ids ?? [];
+
+      if (ids.length === 0) {
+        return interaction.editReply(`📋 The blacklist is currently empty.`);
       }
+
+      const lines = ids.map((id, i) => `\`${i + 1}.\` ${id}`).join("\n");
+      return interaction.editReply(`📋 **Blacklisted users (${ids.length}):**\n${lines}`);
     } catch (err) {
-      return interaction.editReply(`❌ Backend error: ${err.message}`);
+      return interaction.editReply(`❌ Could not fetch blacklist: ${err.message}`);
     }
   }
 
