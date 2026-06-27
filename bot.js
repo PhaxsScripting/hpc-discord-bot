@@ -4,9 +4,14 @@ const axios = require("axios");
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const BOT_SECRET = process.env.BOT_SECRET;
 const API_URL = process.env.API_URL;
-const CLIENT_ID = process.env.CLIENT_ID; // your Application ID from Step 2
+const CLIENT_ID = process.env.CLIENT_ID;
 const BLACKLIST_ROLE_ID = "1195557302250524764";
-const STAFF_ROLE_ID = "1398071632207151184"; // paste Step 1 ID here
+const ALLOWED_ROLE_IDS = [
+  "1390336483277144064",
+  "1398071632207151184",
+  "1422406753231966290",
+  "1398071208343244870"
+];
 
 const client = new Client({
   intents: [
@@ -44,7 +49,6 @@ async function resolveRobloxUser(member) {
     return null;
   }
 
-  // Mismatch check — returned name must exactly match what was queried
   if (robloxUser.name.toLowerCase() !== robloxUsername.toLowerCase()) {
     console.warn(`[Bot] Username mismatch — queried "${robloxUsername}", Roblox returned "${robloxUser.name}". Skipping to avoid wrong blacklist.`);
     return null;
@@ -101,7 +105,6 @@ async function removeBlacklistCandidate(member) {
 client.once("ready", async () => {
   console.log(`[Bot] Online as ${client.user.tag}`);
 
-  // Register slash commands
   const commands = [
     new SlashCommandBuilder()
       .setName("blacklist")
@@ -121,7 +124,6 @@ client.once("ready", async () => {
   await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
   console.log("[Bot] Slash commands registered");
 
-  // Startup sweep
   for (const guild of client.guilds.cache.values()) {
     try {
       await guild.members.fetch();
@@ -159,7 +161,7 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  if (!interaction.member.roles.cache.has(STAFF_ROLE_ID)) {
+  if (!ALLOWED_ROLE_IDS.some(id => interaction.member.roles.cache.has(id))) {
     return interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true });
   }
 
