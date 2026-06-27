@@ -1,10 +1,12 @@
-const { Client, GatewayIntentBits, Partials } = require("discord.js");
+const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder } = require("discord.js");
 const axios = require("axios");
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const BOT_SECRET = process.env.BOT_SECRET;
 const API_URL = process.env.API_URL;
+const CLIENT_ID = process.env.CLIENT_ID; // your Application ID from Step 2
 const BLACKLIST_ROLE_ID = "1195557302250524764";
+const STAFF_ROLE_ID = "1398071632207151184"; // paste Step 1 ID here
 
 const client = new Client({
   intents: [
@@ -36,10 +38,18 @@ async function resolveRobloxUser(member) {
   const displayName = member.displayName;
   const robloxUsername = extractRobloxUsername(displayName);
   const robloxUser = await getRobloxIdFromUsername(robloxUsername);
+
   if (!robloxUser) {
-    console.error(`[Bot] No Roblox user found for username "${robloxUsername}" (from display "${displayName}")`);
+    console.error(`[Bot] No Roblox user found for "${robloxUsername}" (display: "${displayName}")`);
     return null;
   }
+
+  // Mismatch check — returned name must exactly match what was queried
+  if (robloxUser.name.toLowerCase() !== robloxUsername.toLowerCase()) {
+    console.warn(`[Bot] Username mismatch — queried "${robloxUsername}", Roblox returned "${robloxUser.name}". Skipping to avoid wrong blacklist.`);
+    return null;
+  }
+
   return robloxUser;
 }
 
@@ -57,11 +67,11 @@ async function addBlacklistCandidate(member) {
         discordId: member.id,
         discordUsername: member.user.tag
       },
-      { headers: { "Authorization": `Bearer ${BOT_SECRET}` } }
+      { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
     );
 
     if (response.data.success) {
-      console.log(`[Bot] Blacklisted Roblox user ${robloxUser.name} (${robloxUser.id}) — flagged via ${member.displayName}`);
+      console.log(`[Bot] Blacklisted ${robloxUser.name} (${robloxUser.id}) via ${member.displayName}`);
     }
   } catch (error) {
     console.error(`[Bot] Error adding blacklist for ${member.displayName}:`, error.message);
@@ -77,11 +87,11 @@ async function removeBlacklistCandidate(member) {
     const response = await axios.post(
       `${API_URL}/api/blacklist/remove`,
       { robloxId: robloxUser.id },
-      { headers: { "Authorization": `Bearer ${BOT_SECRET}` } }
+      { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
     );
 
     if (response.data.success) {
-      console.log(`[Bot] Un-blacklisted Roblox user ${robloxUser.name} (${robloxUser.id}) — role removed from ${member.displayName}`);
+      console.log(`[Bot] Un-blacklisted ${robloxUser.name} (${robloxUser.id}) — role removed from ${member.displayName}`);
     }
   } catch (error) {
     console.error(`[Bot] Error removing blacklist for ${member.displayName}:`, error.message);
@@ -91,6 +101,27 @@ async function removeBlacklistCandidate(member) {
 client.once("ready", async () => {
   console.log(`[Bot] Online as ${client.user.tag}`);
 
+  // Register slash commands
+  const commands = [
+    new SlashCommandBuilder()
+      .setName("blacklist")
+      .setDescription("Manually blacklist a Roblox user by username")
+      .addStringOption(opt =>
+        opt.setName("username").setDescription("Roblox username").setRequired(true)
+      ),
+    new SlashCommandBuilder()
+      .setName("unblacklist")
+      .setDescription("Remove a Roblox user from the blacklist")
+      .addStringOption(opt =>
+        opt.setName("username").setDescription("Roblox username").setRequired(true)
+      )
+  ].map(cmd => cmd.toJSON());
+
+  const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
+  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+  console.log("[Bot] Slash commands registered");
+
+  // Startup sweep
   for (const guild of client.guilds.cache.values()) {
     try {
       await guild.members.fetch();
@@ -102,7 +133,7 @@ client.once("ready", async () => {
         continue;
       }
 
-      console.log(`[Bot] Sweeping ${role.members.size} existing member(s) with blacklist role`);
+      console.log(`[Bot] Sweeping ${role.members.size} member(s) with blacklist role`);
       for (const member of role.members.values()) {
         await addBlacklistCandidate(member);
       }
@@ -122,6 +153,87 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
   } else if (hadRole && !hasRole) {
     console.log(`[Bot] Blacklist role removed from ${newMember.user.tag}`);
     await removeBlacklistCandidate(newMember);
+  }
+});
+
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  if (!interaction.member.roles.cache.has(STAFF_ROLE_ID)) {
+    return interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true });
+  }
+
+  const username = interaction.options.getString("username");
+
+  if (interaction.commandName === "blacklist") {
+    await interaction.deferReply({ ephemeral: true });
+
+    let robloxUser;
+    try {
+      robloxUser = await getRobloxIdFromUsername(username);
+    } catch (err) {
+      return interaction.editReply(`❌ Roblox API error: ${err.message}`);
+    }
+
+    if (!robloxUser) {
+      return interaction.editReply(`⚠️ Could not find a Roblox account for **"${username}"**. No blacklist entry created.`);
+    }
+
+    if (robloxUser.name.toLowerCase() !== username.toLowerCase()) {
+      return interaction.editReply(`⚠️ Roblox returned **${robloxUser.name}** for query **"${username}"** — names don't match, likely a renamed account. Skipping to avoid blacklisting the wrong person. Check manually.`);
+    }
+
+    try {
+      const response = await axios.post(
+        `${API_URL}/api/blacklist/add`,
+        {
+          robloxId: robloxUser.id,
+          robloxUsername: robloxUser.name,
+          discordId: interaction.user.id,
+          discordUsername: interaction.user.tag
+        },
+        { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
+      );
+
+      if (response.data.success) {
+        return interaction.editReply(`✅ Blacklisted **${robloxUser.name}** (${robloxUser.id}).`);
+      }
+    } catch (err) {
+      return interaction.editReply(`❌ Backend error: ${err.message}`);
+    }
+  }
+
+  if (interaction.commandName === "unblacklist") {
+    await interaction.deferReply({ ephemeral: true });
+
+    let robloxUser;
+    try {
+      robloxUser = await getRobloxIdFromUsername(username);
+    } catch (err) {
+      return interaction.editReply(`❌ Roblox API error: ${err.message}`);
+    }
+
+    if (!robloxUser) {
+      return interaction.editReply(`⚠️ Could not find a Roblox account for **"${username}"**. Nothing removed.`);
+    }
+
+    if (robloxUser.name.toLowerCase() !== username.toLowerCase()) {
+      return interaction.editReply(`⚠️ Roblox returned **${robloxUser.name}** for query **"${username}"** — names don't match. Skipping to avoid removing the wrong person.`);
+    }
+
+    try {
+      const response = await axios.post(
+        `${API_URL}/api/blacklist/remove`,
+        { robloxId: robloxUser.id },
+        { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
+      );
+
+      if (response.data.success) {
+        return interaction.editReply(`✅ Removed **${robloxUser.name}** (${robloxUser.id}) from the blacklist.`);
+      }
+    } catch (err) {
+      return interaction.editReply(`❌ Backend error: ${err.message}`);
+    }
   }
 });
 
