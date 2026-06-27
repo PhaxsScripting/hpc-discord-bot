@@ -90,9 +90,13 @@ async function getRobloxIdFromUsername(username) {
   return match ? { id: match.id, name: match.name } : null;
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // Looks up a Discord user's linked Roblox account via RoVer.
 // Works for ANY verified member, not just ones with a RANK | Username nickname.
-async function getRobloxViaRover(discordId) {
+async function getRobloxViaRover(discordId, retrying = false) {
   if (!GUILD_ID || !ROVER_API_KEY) return null;
   try {
     const res = await axios.get(
@@ -104,6 +108,12 @@ async function getRobloxViaRover(discordId) {
     const userRes = await axios.get(`https://users.roblox.com/v1/users/${res.data.robloxId}`);
     return { id: res.data.robloxId, name: userRes.data?.name ?? String(res.data.robloxId) };
   } catch (err) {
+    if (err.response?.status === 429 && !retrying) {
+      const retryAfterSec = Number(err.response.headers?.["retry-after"]) || 2;
+      console.warn(`[Bot] RoVer rate limited on Discord ID ${discordId} — retrying in ${retryAfterSec}s`);
+      await sleep(retryAfterSec * 1000);
+      return getRobloxViaRover(discordId, true);
+    }
     // 404 just means not verified — anything else is a real API issue, both resolve to null
     console.log(`[Bot] RoVer lookup miss for Discord ID ${discordId}: ${err.message}`);
     return null;
@@ -429,6 +439,7 @@ client.once("ready", async () => {
       console.log(`[Bot] Sweeping ${role.members.size} member(s) with blacklist role`);
       for (const member of role.members.values()) {
         await addBlacklistCandidate(member, true);
+        await sleep(400); // throttle so we don't burst RoVer's rate limit on large sweeps
       }
     } catch (err) {
       console.error(`[Bot] Failed to cache members for ${guild.name}:`, err.message);
