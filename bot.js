@@ -31,7 +31,7 @@ const WEBHOOK_SERVERSTATUS = "https://discord.com/api/webhooks/15203083345010361
 // WEBHOOK_KICKLOG is used by the backend, not the bot directly — see api/blacklist/kick.js
 
 const PAGE_SIZE = 10;
-const SERVER_STATUS_INTERVAL_MS = 60_000; // post every 60 seconds
+const SERVER_STATUS_INTERVAL_MS = 10 * 60_000; // post every 10 minutes
 const EXPIRY_CHECK_INTERVAL_MS = 10 * 60_000; // check for expired blacklists every 10 minutes
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -288,7 +288,7 @@ async function postServerStatus() {
         { name: "🏆 Total Visits",    value: Number(visiting).toLocaleString(), inline: true },
         { name: "👥 Max Players",     value: String(maxPlayers), inline: true }
       )
-      .setFooter({ text: "Updates every 60 seconds" })
+      .setFooter({ text: "Updates every 10 minutes" })
       .setTimestamp();
 
     if (thumbUrl) embed.setThumbnail(thumbUrl);
