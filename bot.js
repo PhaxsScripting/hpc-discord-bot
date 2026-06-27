@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder } = require("discord.js");
+const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
 const axios = require("axios");
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -15,6 +15,8 @@ const ALLOWED_ROLE_IDS = [
 
 const WEBHOOK_COMMANDS = "https://discord.com/api/webhooks/1520230687049908364/FANxy6d9H3yukPf2lis6ZnDHS_3VN9m1aUGao3ofeEGdcFtzZ0LQ3sIkF5n1oC-at57p";
 const WEBHOOK_BLACKLIST = "https://discord.com/api/webhooks/1520233138767265922/YZGiw-27WhGD3HQxWDGJTvzFf9q_-dzxqPawAqdOqAC6-YmCH-ZBLlPYm_ju8y5QU20u";
+
+const PAGE_SIZE = 10;
 
 function timestamp() {
   return `<t:${Math.floor(Date.now() / 1000)}:F>`;
@@ -146,6 +148,41 @@ async function removeBlacklistCandidate(member) {
   }
 }
 
+function buildBlacklistEmbed(entries, page, totalPages) {
+  const start = page * PAGE_SIZE;
+  const pageEntries = entries.slice(start, start + PAGE_SIZE);
+
+  const description = pageEntries.map((entry, i) => {
+    const num = start + i + 1;
+    const robloxName = entry.robloxUsername || "Unknown";
+    const robloxId = entry.robloxId || "Unknown";
+    const discordName = entry.discordUsername || "Unknown";
+    return `**${num}.** ${robloxName} (\`${robloxId}\`)\n　Discord: ${discordName}`;
+  }).join("\n\n");
+
+  return new EmbedBuilder()
+    .setTitle("🚫 Blacklisted Users")
+    .setDescription(description || "No entries.")
+    .setColor(0xff0000)
+    .setFooter({ text: `Page ${page + 1} of ${totalPages} • ${entries.length} total` })
+    .setTimestamp();
+}
+
+function buildPageButtons(page, totalPages) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("bl_prev")
+      .setLabel("◀ Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page === 0),
+    new ButtonBuilder()
+      .setCustomId("bl_next")
+      .setLabel("Next ▶")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page >= totalPages - 1)
+  );
+}
+
 client.once("ready", async () => {
   console.log(`[Bot] Online as ${client.user.tag}`);
 
@@ -186,45 +223,10 @@ client.once("ready", async () => {
         continue;
       }
 
-      const roleMembers = role.members;
-      console.log(`[Bot] Sweeping ${roleMembers.size} member(s) with blacklist role`);
-
-      for (const member of roleMembers.values()) {
+      console.log(`[Bot] Sweeping ${role.members.size} member(s) with blacklist role`);
+      for (const member of role.members.values()) {
         await addBlacklistCandidate(member, true);
       }
-
-      try {
-        const kvResponse = await axios.get(
-          `${API_URL}/api/blacklist/list`,
-          { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
-        );
-
-        const blacklistedIds = kvResponse.data?.ids ?? [];
-
-        for (const robloxId of blacklistedIds) {
-          let foundInRole = false;
-          for (const member of roleMembers.values()) {
-            const robloxUser = await resolveRobloxUser(member).catch(() => null);
-            if (robloxUser && String(robloxUser.id) === String(robloxId)) {
-              foundInRole = true;
-              break;
-            }
-          }
-
-          if (!foundInRole) {
-            console.warn(`[Bot] Roblox ID ${robloxId} is in KV but has no matching role member — removing.`);
-            await axios.post(
-              `${API_URL}/api/blacklist/remove`,
-              { robloxId },
-              { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
-            );
-            await sendWebhook(WEBHOOK_BLACKLIST, `${timestamp()} 🔄 Reconciliation: removed \`${robloxId}\` from blacklist — role not found on restart.`);
-          }
-        }
-      } catch (err) {
-        console.error("[Bot] Reverse reconciliation failed:", err.message);
-      }
-
     } catch (err) {
       console.error(`[Bot] Failed to cache members for ${guild.name}:`, err.message);
     }
@@ -245,6 +247,37 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
 });
 
 client.on("interactionCreate", async (interaction) => {
+  // Handle pagination buttons
+  if (interaction.isButton()) {
+    if (!interaction.customId.startsWith("bl_")) return;
+
+    const message = interaction.message;
+    const embed = message.embeds[0];
+    if (!embed) return;
+
+    const footerMatch = embed.footer?.text?.match(/Page (\d+) of (\d+)/);
+    if (!footerMatch) return;
+
+    let page = parseInt(footerMatch[1]) - 1;
+    const totalPages = parseInt(footerMatch[2]);
+
+    if (interaction.customId === "bl_prev") page = Math.max(0, page - 1);
+    if (interaction.customId === "bl_next") page = Math.min(totalPages - 1, page + 1);
+
+    try {
+      const kvResponse = await axios.get(
+        `${API_URL}/api/blacklist/list`,
+        { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
+      );
+      const entries = kvResponse.data?.entries ?? [];
+      const newEmbed = buildBlacklistEmbed(entries, page, totalPages);
+      const newRow = buildPageButtons(page, totalPages);
+      return interaction.update({ embeds: [newEmbed], components: [newRow] });
+    } catch (err) {
+      return interaction.reply({ content: `❌ Failed to load page: ${err.message}`, ephemeral: true });
+    }
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   if (!ALLOWED_ROLE_IDS.some(id => interaction.member.roles.cache.has(id))) {
@@ -264,16 +297,18 @@ client.on("interactionCreate", async (interaction) => {
         { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
       );
 
-      const ids = kvResponse.data?.ids ?? [];
+      const entries = kvResponse.data?.entries ?? [];
 
-      if (ids.length === 0) {
-        return interaction.editReply(`📋 The blacklist is currently empty.`);
+      if (entries.length === 0) {
+        return interaction.editReply({ content: "📋 The blacklist is currently empty." });
       }
 
-      const lines = ids.map((id, i) => `\`${i + 1}.\` ${id}`).join("\n");
-      return interaction.editReply(`📋 **Blacklisted users (${ids.length}):**\n${lines}`);
+      const totalPages = Math.ceil(entries.length / PAGE_SIZE);
+      const embed = buildBlacklistEmbed(entries, 0, totalPages);
+      const row = buildPageButtons(0, totalPages);
+      return interaction.editReply({ embeds: [embed], components: [row] });
     } catch (err) {
-      return interaction.editReply(`❌ Could not fetch blacklist: ${err.message}`);
+      return interaction.editReply({ content: `❌ Could not fetch blacklist: ${err.message}` });
     }
   }
 
