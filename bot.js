@@ -30,10 +30,7 @@ async function sendWebhook(url, content) {
 
 async function isAlreadyBlacklisted(robloxId) {
   try {
-    const response = await axios.get(
-      `${API_URL}/api/check/${robloxId}`
-      // no auth header needed — this endpoint is public
-    );
+    const response = await axios.get(`${API_URL}/api/check/${robloxId}`);
     return response.data?.blacklisted === true;
   } catch (err) {
     console.error(`[Bot] Could not check blacklist status for ${robloxId}:`, err.message);
@@ -152,7 +149,6 @@ async function removeBlacklistCandidate(member) {
 client.once("ready", async () => {
   console.log(`[Bot] Online as ${client.user.tag}`);
 
-  // Register slash commands
   try {
     const commands = [
       new SlashCommandBuilder()
@@ -169,7 +165,7 @@ client.once("ready", async () => {
         ),
       new SlashCommandBuilder()
         .setName("checkblacklist")
-        .setDescription("Check if a Roblox user is blacklisted")
+        .setDescription("Check if a Roblox user is currently blacklisted")
         .addStringOption(opt =>
           opt.setName("username").setDescription("Roblox username").setRequired(true)
         )
@@ -182,7 +178,6 @@ client.once("ready", async () => {
     console.error("[Bot] Failed to register slash commands:", err.message);
   }
 
-  // Startup sweep
   for (const guild of client.guilds.cache.values()) {
     try {
       await guild.members.fetch();
@@ -202,7 +197,7 @@ client.once("ready", async () => {
         await addBlacklistCandidate(member, true);
       }
 
-      // Reverse pass — find anyone in KV who no longer has the role
+      // Reverse pass — remove anyone in KV who no longer has the role
       try {
         const kvResponse = await axios.get(
           `${API_URL}/api/blacklist/list`,
@@ -212,7 +207,6 @@ client.once("ready", async () => {
         const blacklistedIds = kvResponse.data?.ids ?? [];
 
         for (const robloxId of blacklistedIds) {
-          // Check if any current role member maps to this roblox ID
           let foundInRole = false;
           for (const member of roleMembers.values()) {
             const robloxUser = await resolveRobloxUser(member).catch(() => null);
@@ -285,19 +279,11 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     try {
-      const checkResponse = await axios.get(
-        `${API_URL}/api/blacklist/check/${robloxUser.id}`,
-        { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
-      );
-
+      const checkResponse = await axios.get(`${API_URL}/api/check/${robloxUser.id}`);
       const data = checkResponse.data;
+
       if (data?.blacklisted) {
-        const meta = data.meta ?? {};
-        const addedAt = meta.addedAt ? `<t:${Math.floor(new Date(meta.addedAt).getTime() / 1000)}:F>` : "unknown";
-        const addedBy = meta.discordUsername ?? "unknown";
-        return interaction.editReply(
-          `🔴 **${robloxUser.name}** (\`${robloxUser.id}\`) is **blacklisted**.\nAdded by: **${addedBy}**\nAdded at: ${addedAt}`
-        );
+        return interaction.editReply(`🔴 **${robloxUser.name}** (\`${robloxUser.id}\`) is **blacklisted**.`);
       } else {
         return interaction.editReply(`🟢 **${robloxUser.name}** (\`${robloxUser.id}\`) is **not blacklisted**.`);
       }
