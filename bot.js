@@ -11,6 +11,8 @@ const DISCORD_TOKEN   = process.env.DISCORD_TOKEN;
 const BOT_SECRET      = process.env.BOT_SECRET;
 const API_URL         = process.env.API_URL;
 const CLIENT_ID       = process.env.CLIENT_ID;
+const GUILD_ID        = process.env.GUILD_ID;       // your Discord server ID — required for RoVer lookups and expiry role removal
+const ROVER_API_KEY   = process.env.ROVER_API_KEY;  // from https://rover.link developer dashboard
 
 const BLACKLIST_ROLE_ID = "1195557302250524764";
 const ALLOWED_ROLE_IDS  = [
@@ -30,6 +32,7 @@ const WEBHOOK_SERVERSTATUS = "https://discord.com/api/webhooks/15203083345010361
 
 const PAGE_SIZE = 10;
 const SERVER_STATUS_INTERVAL_MS = 60_000; // post every 60 seconds
+const EXPIRY_CHECK_INTERVAL_MS = 10 * 60_000; // check for expired blacklists every 10 minutes
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -87,7 +90,47 @@ async function getRobloxIdFromUsername(username) {
   return match ? { id: match.id, name: match.name } : null;
 }
 
+// Looks up a Discord user's linked Roblox account via RoVer.
+// Works for ANY verified member, not just ones with a RANK | Username nickname.
+async function getRobloxViaRover(discordId) {
+  if (!GUILD_ID || !ROVER_API_KEY) return null;
+  try {
+    const res = await axios.get(
+      `https://registry.rover.link/api/guilds/${GUILD_ID}/discord-to-roblox/${discordId}`,
+      { headers: { Authorization: `Bearer ${ROVER_API_KEY}` } }
+    );
+    if (!res.data?.robloxId) return null;
+
+    const userRes = await axios.get(`https://users.roblox.com/v1/users/${res.data.robloxId}`);
+    return { id: res.data.robloxId, name: userRes.data?.name ?? String(res.data.robloxId) };
+  } catch (err) {
+    // 404 just means not verified — anything else is a real API issue, both resolve to null
+    console.log(`[Bot] RoVer lookup miss for Discord ID ${discordId}: ${err.message}`);
+    return null;
+  }
+}
+
+// Parses duration strings like "30d", "24h", "60m" into milliseconds.
+// Returns null for no input, undefined for an unrecognized format.
+function parseDuration(str) {
+  if (!str) return null;
+  const match = str.trim().match(/^(\d+)(d|h|m)$/i);
+  if (!match) return undefined;
+  const value = parseInt(match[1], 10);
+  const unit  = match[2].toLowerCase();
+  const multipliers = { d: 86_400_000, h: 3_600_000, m: 60_000 };
+  return value * multipliers[unit];
+}
+
 async function resolveRobloxUser(member) {
+  // 1. Try RoVer first — works for any verified member regardless of nickname format
+  const roverResult = await getRobloxViaRover(member.id);
+  if (roverResult) {
+    console.log(`[Bot] RoVer resolved ${member.user.tag} → ${roverResult.name} (${roverResult.id})`);
+    return roverResult;
+  }
+
+  // 2. Fall back to display-name parsing (catches ranked staff using RANK | Username)
   const displayName  = member.displayName;
   const robloxUsername = extractRobloxUsername(displayName);
   const robloxUser   = await getRobloxIdFromUsername(robloxUsername);
@@ -105,7 +148,7 @@ async function resolveRobloxUser(member) {
 
 // ─── Blacklist candidate helpers ─────────────────────────────────────────────
 
-async function addBlacklistCandidate(member, fromStartup = false) {
+async function addBlacklistCandidate(member, fromStartup = false, extra = {}) {
   console.log(`[Bot] Adding blacklist candidate: ${member.user.tag} (display: ${member.displayName})`);
   try {
     const robloxUser = await resolveRobloxUser(member);
@@ -131,15 +174,18 @@ async function addBlacklistCandidate(member, fromStartup = false) {
         robloxId: robloxUser.id,
         robloxUsername: robloxUser.name,
         discordId: member.id,
-        discordUsername: member.user.tag
+        discordUsername: member.user.tag,
+        reason: extra.reason,
+        expiresAt: extra.expiresAt
       },
       { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
     );
 
     if (response.data.success) {
+      const expiryNote = extra.expiresAt ? ` (expires <t:${Math.floor(new Date(extra.expiresAt).getTime() / 1000)}:R>)` : "";
       console.log(`[Bot] Blacklisted ${robloxUser.name} (${robloxUser.id}) via ${member.displayName}`);
       await sendWebhook(WEBHOOK_BLACKLIST,
-        `${timestamp()} ✅ Blacklisted **${robloxUser.name}** (\`${robloxUser.id}\`) — role given to ${member.user.tag} (\`${member.displayName}\`)`);
+        `${timestamp()} ✅ Blacklisted **${robloxUser.name}** (\`${robloxUser.id}\`) — role given to ${member.user.tag} (\`${member.displayName}\`)${expiryNote}`);
     }
   } catch (error) {
     console.error(`[Bot] Error adding blacklist for ${member.displayName}:`, error.message);
@@ -188,7 +234,10 @@ function buildBlacklistEmbed(entries, page, totalPages) {
     const robloxId    = entry.robloxId       || "Unknown";
     const discordName = entry.discordUsername || "Unknown";
     const reason      = entry.reason          || "No reason provided";
-    return `**${num}.** ${robloxName} (\`${robloxId}\`)\n　Discord: ${discordName}\n　Reason: ${reason}`;
+    const expiry       = entry.expiresAt
+      ? `⏰ Expires <t:${Math.floor(new Date(entry.expiresAt).getTime() / 1000)}:R>`
+      : "🔴 Permanent";
+    return `**${num}.** ${robloxName} (\`${robloxId}\`)\n　Discord: ${discordName}\n　Reason: ${reason}\n　${expiry}`;
   }).join("\n\n");
 
   return new EmbedBuilder()
@@ -250,6 +299,53 @@ async function postServerStatus() {
   }
 }
 
+// ─── Expiry checker ──────────────────────────────────────────────────────────
+
+async function checkExpiredBlacklists() {
+  try {
+    const listRes = await axios.get(
+      `${API_URL}/api/blacklist/list`,
+      { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
+    );
+    const entries = listRes.data?.entries ?? [];
+    const now     = Date.now();
+
+    for (const entry of entries) {
+      if (!entry.expiresAt) continue;
+      if (now < new Date(entry.expiresAt).getTime()) continue;
+
+      try {
+        await axios.post(
+          `${API_URL}/api/blacklist/remove`,
+          { robloxId: entry.robloxId },
+          { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
+        );
+        await sendWebhook(WEBHOOK_BLACKLIST,
+          `${timestamp()} ⏰ Temporary blacklist expired — **${entry.robloxUsername ?? entry.robloxId}** (\`${entry.robloxId}\`) automatically removed.`);
+        console.log(`[Bot] Expired blacklist removed: ${entry.robloxUsername} (${entry.robloxId})`);
+      } catch (err) {
+        console.error(`[Bot] Failed to remove expired entry ${entry.robloxId}:`, err.message);
+        continue;
+      }
+
+      if (entry.discordId && entry.discordId !== "unknown" && GUILD_ID) {
+        try {
+          const guild  = client.guilds.cache.get(GUILD_ID);
+          const member = guild ? await guild.members.fetch(entry.discordId).catch(() => null) : null;
+          if (member?.roles?.cache?.has(BLACKLIST_ROLE_ID)) {
+            await member.roles.remove(BLACKLIST_ROLE_ID);
+            console.log(`[Bot] Removed blacklist role from ${member.user.tag} after expiry.`);
+          }
+        } catch (err) {
+          console.error(`[Bot] Could not remove Discord role after expiry for ${entry.discordId}:`, err.message);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[Bot] Expiry check failed:", err.message);
+  }
+}
+
 // ─── Ready ───────────────────────────────────────────────────────────────────
 
 client.once("ready", async () => {
@@ -263,6 +359,21 @@ client.once("ready", async () => {
         .setDescription("Manually blacklist a Roblox user by username")
         .addStringOption(opt =>
           opt.setName("username").setDescription("Roblox username").setRequired(true)
+        )
+        .addStringOption(opt =>
+          opt.setName("duration").setDescription("Optional expiry: 30d, 7d, 24h, 60m — omit for permanent").setRequired(false)
+        ),
+      new SlashCommandBuilder()
+        .setName("blacklistuser")
+        .setDescription("Blacklist a Discord member by @mention — resolves their Roblox account via RoVer")
+        .addUserOption(opt =>
+          opt.setName("user").setDescription("Discord member to blacklist").setRequired(true)
+        )
+        .addStringOption(opt =>
+          opt.setName("reason").setDescription("Reason for the blacklist").setRequired(false)
+        )
+        .addStringOption(opt =>
+          opt.setName("duration").setDescription("Optional expiry: 30d, 7d, 24h, 60m — omit for permanent").setRequired(false)
         ),
       new SlashCommandBuilder()
         .setName("unblacklist")
@@ -331,6 +442,15 @@ client.once("ready", async () => {
     console.log("[Bot] Server status poller started");
   } else {
     console.warn("[Bot] ROBLOX_UNIVERSE_ID not set — server status poller disabled");
+  }
+
+  // Start expiry checker for temporary blacklists
+  checkExpiredBlacklists(); // immediate first check
+  setInterval(checkExpiredBlacklists, EXPIRY_CHECK_INTERVAL_MS);
+  console.log("[Bot] Expiry checker started (10 min interval)");
+
+  if (!GUILD_ID || !ROVER_API_KEY) {
+    console.warn("[Bot] GUILD_ID or ROVER_API_KEY not set — RoVer lookups disabled, falling back to nickname parsing only.");
   }
 });
 
@@ -507,6 +627,7 @@ client.on("interactionCreate", async (interaction) => {
       const addedBy    = entry?.discordUsername ?? "Unknown";
       const reason     = entry?.reason ?? "No reason provided";
       const discordId  = entry?.discordId ?? "Unknown";
+      const expiresAt  = entry?.expiresAt ? `<t:${Math.floor(new Date(entry.expiresAt).getTime() / 1000)}:R>` : "Never (permanent)";
 
       const embed = new EmbedBuilder()
         .setTitle(`🔴 Blacklist Info — ${robloxUser.name}`)
@@ -517,6 +638,7 @@ client.on("interactionCreate", async (interaction) => {
           { name: "Discord Tag",     value: addedBy,                  inline: true },
           { name: "Discord ID",      value: `\`${discordId}\``,       inline: true },
           { name: "Added At",        value: addedAt,                  inline: true },
+          { name: "Expires",         value: expiresAt,                inline: true },
           { name: "Reason",          value: reason,                   inline: false }
         )
         .setTimestamp();
@@ -612,6 +734,13 @@ client.on("interactionCreate", async (interaction) => {
   //  /blacklist <username>
   // ══════════════════════════════════════════════════
   if (cmd === "blacklist") {
+    const durationStr = interaction.options.getString("duration");
+    const durationMs  = parseDuration(durationStr);
+    if (durationMs === undefined) {
+      return interaction.reply({ content: "❌ Invalid duration format. Use something like `30d`, `7d`, `24h`, or `60m`.", ephemeral: true });
+    }
+    const expiresAt = durationMs ? new Date(Date.now() + durationMs).toISOString() : null;
+
     await interaction.deferReply({ ephemeral: true });
     await sendWebhook(WEBHOOK_COMMANDS, `${timestamp()} 🔧 **${interaction.user.tag}** ran \`/blacklist ${username}\``);
 
@@ -645,18 +774,87 @@ client.on("interactionCreate", async (interaction) => {
           robloxId: robloxUser.id,
           robloxUsername: robloxUser.name,
           discordId: interaction.user.id,
-          discordUsername: interaction.user.tag
+          discordUsername: interaction.user.tag,
+          expiresAt
         },
         { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
       );
 
       if (response.data.success) {
+        const expiryNote = expiresAt ? ` (expires <t:${Math.floor(new Date(expiresAt).getTime() / 1000)}:R>)` : "";
         await sendWebhook(WEBHOOK_COMMANDS,
-          `${timestamp()} ✅ \`/blacklist\` — **${robloxUser.name}** (\`${robloxUser.id}\`) blacklisted by **${interaction.user.tag}**`);
-        return interaction.editReply(`✅ Blacklisted **${robloxUser.name}** (${robloxUser.id}).`);
+          `${timestamp()} ✅ \`/blacklist\` — **${robloxUser.name}** (\`${robloxUser.id}\`) blacklisted by **${interaction.user.tag}**${expiryNote}`);
+        return interaction.editReply(`✅ Blacklisted **${robloxUser.name}** (${robloxUser.id})${expiryNote}.`);
       }
     } catch (err) {
       await sendWebhook(WEBHOOK_COMMANDS, `${timestamp()} ❌ \`/blacklist ${username}\` — backend error: ${err.message}`);
+      return interaction.editReply(`❌ Backend error: ${err.message}`);
+    }
+  }
+
+  // ══════════════════════════════════════════════════
+  //  /blacklistuser <@mention>
+  // ══════════════════════════════════════════════════
+  if (cmd === "blacklistuser") {
+    const targetUser  = interaction.options.getUser("user");
+    const reason      = interaction.options.getString("reason");
+    const durationStr = interaction.options.getString("duration");
+    const durationMs  = parseDuration(durationStr);
+
+    if (durationMs === undefined) {
+      return interaction.reply({ content: "❌ Invalid duration format. Use something like `30d`, `7d`, `24h`, or `60m`.", ephemeral: true });
+    }
+    const expiresAt = durationMs ? new Date(Date.now() + durationMs).toISOString() : null;
+
+    await interaction.deferReply({ ephemeral: true });
+    await sendWebhook(WEBHOOK_COMMANDS, `${timestamp()} 🔧 **${interaction.user.tag}** ran \`/blacklistuser ${targetUser.tag}\``);
+
+    let robloxUser = await getRobloxViaRover(targetUser.id);
+    if (!robloxUser) {
+      try {
+        const targetMember = await interaction.guild.members.fetch(targetUser.id);
+        const fallbackUsername = extractRobloxUsername(targetMember.displayName);
+        const fallbackResult   = await getRobloxIdFromUsername(fallbackUsername);
+        if (fallbackResult && fallbackResult.name.toLowerCase() === fallbackUsername.toLowerCase()) {
+          robloxUser = fallbackResult;
+        }
+      } catch (_) {}
+    }
+
+    if (!robloxUser) {
+      await sendWebhook(WEBHOOK_COMMANDS, `${timestamp()} ⚠️ \`/blacklistuser ${targetUser.tag}\` — could not resolve a Roblox account.`);
+      return interaction.editReply(`⚠️ Could not resolve a Roblox account for ${targetUser.tag} — they may not be verified with RoVer, and their nickname doesn't match a valid Roblox username either.`);
+    }
+
+    const alreadyBlacklisted = await isAlreadyBlacklisted(robloxUser.id);
+    if (alreadyBlacklisted) {
+      await sendWebhook(WEBHOOK_COMMANDS, `${timestamp()} ℹ️ \`/blacklistuser ${targetUser.tag}\` — already blacklisted, skipped.`);
+      return interaction.editReply(`ℹ️ **${robloxUser.name}** is already blacklisted.`);
+    }
+
+    try {
+      const response = await axios.post(
+        `${API_URL}/api/blacklist/add`,
+        {
+          robloxId: robloxUser.id,
+          robloxUsername: robloxUser.name,
+          discordId: targetUser.id,
+          discordUsername: targetUser.tag,
+          reason,
+          expiresAt
+        },
+        { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
+      );
+
+      if (response.data.success) {
+        const expiryNote = expiresAt ? ` (expires <t:${Math.floor(new Date(expiresAt).getTime() / 1000)}:R>)` : "";
+        const reasonNote  = reason ? ` — ${reason}` : "";
+        await sendWebhook(WEBHOOK_COMMANDS,
+          `${timestamp()} ✅ \`/blacklistuser\` — **${robloxUser.name}** (\`${robloxUser.id}\`), Discord: ${targetUser.tag}, blacklisted by **${interaction.user.tag}**${expiryNote}${reasonNote}`);
+        return interaction.editReply(`✅ Blacklisted **${robloxUser.name}** (${robloxUser.id}) — Discord: ${targetUser.tag}${expiryNote}${reasonNote}.`);
+      }
+    } catch (err) {
+      await sendWebhook(WEBHOOK_COMMANDS, `${timestamp()} ❌ \`/blacklistuser ${targetUser.tag}\` — backend error: ${err.message}`);
       return interaction.editReply(`❌ Backend error: ${err.message}`);
     }
   }
