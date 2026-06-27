@@ -31,8 +31,8 @@ async function sendWebhook(url, content) {
 async function isAlreadyBlacklisted(robloxId) {
   try {
     const response = await axios.get(
-      `${API_URL}/api/blacklist/check/${robloxId}`,
-      { headers: { Authorization: `Bearer ${BOT_SECRET}` } }
+      `${API_URL}/api/check/${robloxId}`
+      // no auth header needed — this endpoint is public
     );
     return response.data?.blacklisted === true;
   } catch (err) {
