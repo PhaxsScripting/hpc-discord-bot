@@ -13,6 +13,17 @@ const ALLOWED_ROLE_IDS = [
   "1398071208343244870"
 ];
 
+const WEBHOOK_COMMANDS = "https://discord.com/api/webhooks/1520230687049908364/FANxy6d9H3yukPf2lis6ZnDHS_3VN9m1aUGao3ofeEGdcFtzZ0LQ3sIkF5n1oC-at57p";
+const WEBHOOK_BLACKLIST = "https://discord.com/api/webhooks/1520233138767265922/YZGiw-27WhGD3HQxWDGJTvzFf9q_-dzxqPawAqdOqAC6-YmCH-ZBLlPYm_ju8y5QU20u";
+
+async function sendWebhook(url, content) {
+  try {
+    await axios.post(url, { content }, { headers: { "Content-Type": "application/json" } });
+  } catch (err) {
+    console.error(`[Bot] Webhook send failed:`, err.message);
+  }
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -50,7 +61,7 @@ async function resolveRobloxUser(member) {
   }
 
   if (robloxUser.name.toLowerCase() !== robloxUsername.toLowerCase()) {
-    console.warn(`[Bot] Username mismatch — queried "${robloxUsername}", Roblox returned "${robloxUser.name}". Skipping to avoid wrong blacklist.`);
+    console.warn(`[Bot] Username mismatch — queried "${robloxUsername}", Roblox returned "${robloxUser.name}". Skipping.`);
     return null;
   }
 
@@ -61,7 +72,10 @@ async function addBlacklistCandidate(member) {
   console.log(`[Bot] Adding blacklist candidate: ${member.user.tag} (display: ${member.displayName})`);
   try {
     const robloxUser = await resolveRobloxUser(member);
-    if (!robloxUser) return;
+    if (!robloxUser) {
+      await sendWebhook(WEBHOOK_BLACKLIST, `⚠️ Could not resolve Roblox user for **${member.user.tag}** (display: \`${member.displayName}\`) — no blacklist entry created.`);
+      return;
+    }
 
     const response = await axios.post(
       `${API_URL}/api/blacklist/add`,
@@ -76,9 +90,11 @@ async function addBlacklistCandidate(member) {
 
     if (response.data.success) {
       console.log(`[Bot] Blacklisted ${robloxUser.name} (${robloxUser.id}) via ${member.displayName}`);
+      await sendWebhook(WEBHOOK_BLACKLIST, `✅ Blacklisted **${robloxUser.name}** (\`${robloxUser.id}\`) — role given to ${member.user.tag} (\`${member.displayName}\`)`);
     }
   } catch (error) {
     console.error(`[Bot] Error adding blacklist for ${member.displayName}:`, error.message);
+    await sendWebhook(WEBHOOK_BLACKLIST, `❌ Error blacklisting **${member.user.tag}** (\`${member.displayName}\`): ${error.message}`);
   }
 }
 
@@ -86,7 +102,10 @@ async function removeBlacklistCandidate(member) {
   console.log(`[Bot] Removing blacklist candidate: ${member.user.tag} (display: ${member.displayName})`);
   try {
     const robloxUser = await resolveRobloxUser(member);
-    if (!robloxUser) return;
+    if (!robloxUser) {
+      await sendWebhook(WEBHOOK_BLACKLIST, `⚠️ Could not resolve Roblox user for **${member.user.tag}** (display: \`${member.displayName}\`) — nothing removed.`);
+      return;
+    }
 
     const response = await axios.post(
       `${API_URL}/api/blacklist/remove`,
@@ -96,9 +115,11 @@ async function removeBlacklistCandidate(member) {
 
     if (response.data.success) {
       console.log(`[Bot] Un-blacklisted ${robloxUser.name} (${robloxUser.id}) — role removed from ${member.displayName}`);
+      await sendWebhook(WEBHOOK_BLACKLIST, `🔓 Un-blacklisted **${robloxUser.name}** (\`${robloxUser.id}\`) — role removed from ${member.user.tag} (\`${member.displayName}\`)`);
     }
   } catch (error) {
     console.error(`[Bot] Error removing blacklist for ${member.displayName}:`, error.message);
+    await sendWebhook(WEBHOOK_BLACKLIST, `❌ Error removing blacklist for **${member.user.tag}** (\`${member.displayName}\`): ${error.message}`);
   }
 }
 
@@ -162,6 +183,7 @@ client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   if (!ALLOWED_ROLE_IDS.some(id => interaction.member.roles.cache.has(id))) {
+    await sendWebhook(WEBHOOK_COMMANDS, `🚫 **${interaction.user.tag}** tried to use \`/${interaction.commandName}\` but lacks permission.`);
     return interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true });
   }
 
@@ -169,19 +191,23 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.commandName === "blacklist") {
     await interaction.deferReply({ ephemeral: true });
+    await sendWebhook(WEBHOOK_COMMANDS, `🔧 **${interaction.user.tag}** ran \`/blacklist ${username}\``);
 
     let robloxUser;
     try {
       robloxUser = await getRobloxIdFromUsername(username);
     } catch (err) {
+      await sendWebhook(WEBHOOK_COMMANDS, `❌ \`/blacklist ${username}\` — Roblox API error: ${err.message}`);
       return interaction.editReply(`❌ Roblox API error: ${err.message}`);
     }
 
     if (!robloxUser) {
+      await sendWebhook(WEBHOOK_COMMANDS, `⚠️ \`/blacklist ${username}\` — no Roblox account found, no entry created.`);
       return interaction.editReply(`⚠️ Could not find a Roblox account for **"${username}"**. No blacklist entry created.`);
     }
 
     if (robloxUser.name.toLowerCase() !== username.toLowerCase()) {
+      await sendWebhook(WEBHOOK_COMMANDS, `⚠️ \`/blacklist ${username}\` — mismatch, Roblox returned **${robloxUser.name}**. Skipped.`);
       return interaction.editReply(`⚠️ Roblox returned **${robloxUser.name}** for query **"${username}"** — names don't match, likely a renamed account. Skipping to avoid blacklisting the wrong person. Check manually.`);
     }
 
@@ -198,28 +224,34 @@ client.on("interactionCreate", async (interaction) => {
       );
 
       if (response.data.success) {
+        await sendWebhook(WEBHOOK_COMMANDS, `✅ \`/blacklist\` — **${robloxUser.name}** (\`${robloxUser.id}\`) blacklisted by **${interaction.user.tag}**`);
         return interaction.editReply(`✅ Blacklisted **${robloxUser.name}** (${robloxUser.id}).`);
       }
     } catch (err) {
+      await sendWebhook(WEBHOOK_COMMANDS, `❌ \`/blacklist ${username}\` — backend error: ${err.message}`);
       return interaction.editReply(`❌ Backend error: ${err.message}`);
     }
   }
 
   if (interaction.commandName === "unblacklist") {
     await interaction.deferReply({ ephemeral: true });
+    await sendWebhook(WEBHOOK_COMMANDS, `🔧 **${interaction.user.tag}** ran \`/unblacklist ${username}\``);
 
     let robloxUser;
     try {
       robloxUser = await getRobloxIdFromUsername(username);
     } catch (err) {
+      await sendWebhook(WEBHOOK_COMMANDS, `❌ \`/unblacklist ${username}\` — Roblox API error: ${err.message}`);
       return interaction.editReply(`❌ Roblox API error: ${err.message}`);
     }
 
     if (!robloxUser) {
+      await sendWebhook(WEBHOOK_COMMANDS, `⚠️ \`/unblacklist ${username}\` — no Roblox account found, nothing removed.`);
       return interaction.editReply(`⚠️ Could not find a Roblox account for **"${username}"**. Nothing removed.`);
     }
 
     if (robloxUser.name.toLowerCase() !== username.toLowerCase()) {
+      await sendWebhook(WEBHOOK_COMMANDS, `⚠️ \`/unblacklist ${username}\` — mismatch, Roblox returned **${robloxUser.name}**. Skipped.`);
       return interaction.editReply(`⚠️ Roblox returned **${robloxUser.name}** for query **"${username}"** — names don't match. Skipping to avoid removing the wrong person.`);
     }
 
@@ -231,9 +263,11 @@ client.on("interactionCreate", async (interaction) => {
       );
 
       if (response.data.success) {
+        await sendWebhook(WEBHOOK_COMMANDS, `🔓 \`/unblacklist\` — **${robloxUser.name}** (\`${robloxUser.id}\`) removed by **${interaction.user.tag}**`);
         return interaction.editReply(`✅ Removed **${robloxUser.name}** (${robloxUser.id}) from the blacklist.`);
       }
     } catch (err) {
+      await sendWebhook(WEBHOOK_COMMANDS, `❌ \`/unblacklist ${username}\` — backend error: ${err.message}`);
       return interaction.editReply(`❌ Backend error: ${err.message}`);
     }
   }
