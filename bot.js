@@ -19,7 +19,8 @@ const ALLOWED_ROLE_IDS  = [
   "1390336483277144064",
   "1398071632207151184",
   "1422406753231966290",
-  "1398071208343244870"
+  "1398071208343244870",
+  "1244034447590948885"
 ];
 
 // Your Roblox Universe ID — find it in Roblox Studio → Game Settings → Basic Info
