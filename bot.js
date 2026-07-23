@@ -1,4 +1,3 @@
-require('dotenv').config();
 const { Client, GatewayIntentBits, Partials } = require('discord.js');
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildBans], partials: [Partials.User] });
 
@@ -23,7 +22,6 @@ client.on('interactionCreate', async interaction => {
             return;
         }
 
-        // Failed attemptes.
         try {
             const bans = await guild.bans.fetch();
             if (bans.size === 0) {
