@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Partials } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, PermissionsBitField } = require('discord.js');
 const client = new Client({ 
     intents: [
         GatewayIntentBits.Guilds,
@@ -20,6 +20,12 @@ client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
 
     if (interaction.commandName === 'unbanusers') {
+        // Restrict to administrators only
+        if (!interaction.memberPermissions.has(PermissionsBitField.Flags.Administrator)) {
+            await interaction.reply({ content: 'You need Administrator permission to run this command.', ephemeral: true });
+            return;
+        }
+
         await interaction.deferReply({ ephemeral: true });
 
         const guild = interaction.guild;
@@ -41,10 +47,14 @@ client.on('interactionCreate', async interaction => {
                     await guild.members.unban(userId);
                     count++;
 
+                    // Log successful unban
+                    console.log(`Unbanned user ${userId}`);
+
                     // Try to send a DM
                     const user = await client.users.fetch(userId);
                     try {
                         await user.send("I'm sorry for the inconvience, I (Phax) took a bad decision and banned a lot of users for no reason.  Please excuse my decision and take the time to join back at https://discord.gg/UXntxJGjU");
+                        console.log(`DM sent to user ${userId}`);
                     } catch (dmError) {
                         console.log(`Could not send DM to user ${userId}: ${dmError.message}`);
                     }
