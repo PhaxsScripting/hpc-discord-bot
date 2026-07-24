@@ -45,6 +45,8 @@ async function logToWebhook(content) {
 
 function assertGuildOnly(interaction) {
   if (!TARGET_GUILD_ID) return true; // No restriction
+  if (!TARGET_GUILD_ID) return true; // No restriction
+  if (!TARGET_GUILD_ID) return true; // No restriction
   return interaction.guildId === TARGET_GUILD_ID;
 }
 
@@ -199,22 +201,38 @@ client.once('ready', async () => {
     {
       name: 'banplayer',
       description: 'Ban a player from PlayFab (PlayFab Manager only)',
-      options: [{ name: 'target', description: 'PlayFab ID or display name', type: 3, required: true }]
+      options: [
+        { name: 'target', description: 'PlayFab ID or display name', type: 3, required: true },
+        { name: 'reason', description: 'Reason for the ban', type: 3, required: false },
+        { name: 'duration', description: 'Duration of the ban in hours (0 for permanent)', type: 4, required: false },
+      ]
     },
     {
       name: 'unbanplayer',
       description: 'Unban a player from PlayFab (PlayFab Manager only)',
-      options: [{ name: 'target', description: 'PlayFab ID or display name', type: 3, required: true }]
+      options: [
+        { name: 'target', description: 'PlayFab ID or display name', type: 3, required: true },
+        { name: 'reason', description: 'Reason for the ban', type: 3, required: false },
+        { name: 'duration', description: 'Duration of the ban in hours (0 for permanent)', type: 4, required: false },
+      ]
     },
     {
       name: 'viewplayerinventory',
       description: "View a player's cosmetic inventory (PlayFab Manager only)",
-      options: [{ name: 'target', description: 'PlayFab ID or display name', type: 3, required: true }]
+      options: [
+        { name: 'target', description: 'PlayFab ID or display name', type: 3, required: true },
+        { name: 'reason', description: 'Reason for the ban', type: 3, required: false },
+        { name: 'duration', description: 'Duration of the ban in hours (0 for permanent)', type: 4, required: false },
+      ]
     },
     {
       name: 'ipbanuser',
       description: 'Ban a player and flag it as an IP ban (PlayFab Manager only)',
-      options: [{ name: 'target', description: 'PlayFab ID or display name', type: 3, required: true }]
+      options: [
+        { name: 'target', description: 'PlayFab ID or display name', type: 3, required: true },
+        { name: 'reason', description: 'Reason for the ban', type: 3, required: false },
+        { name: 'duration', description: 'Duration of the ban in hours (0 for permanent)', type: 4, required: false },
+      ]
     },
     {
       name: 'viewdlc',
@@ -223,17 +241,25 @@ client.once('ready', async () => {
     {
       name: 'viewuserprofile',
       description: "View a player's full PlayFab profile (PlayFab Manager only)",
-      options: [{ name: 'target', description: 'PlayFab ID or display name', type: 3, required: true }]
+      options: [
+        { name: 'target', description: 'PlayFab ID or display name', type: 3, required: true },
+        { name: 'reason', description: 'Reason for the ban', type: 3, required: false },
+        { name: 'duration', description: 'Duration of the ban in hours (0 for permanent)', type: 4, required: false },
+      ]
     },
     {
       name: 'viewcurrency',
       description: "View a player's SR currency",
-      options: [{ name: 'target', description: 'PlayFab ID or display name', type: 3, required: true }]
+      options: [
+        { name: 'target', description: 'PlayFab ID or display name', type: 3, required: true },
+        { name: 'reason', description: 'Reason for the ban', type: 3, required: false },
+        { name: 'duration', description: 'Duration of the ban in hours (0 for permanent)', type: 4, required: false },
+      ]
     }
   ];
 
   try {
-    await client.application.commands.set(commands, TARGET_GUILD_ID ?? null);
+    await client.application.commands.set(commands, TARGET_GUILD_ID);
     console.log('Slash commands registered for target guild.');
   } catch (e) {
     console.error('Failed to register slash commands:', e);
@@ -506,7 +532,7 @@ client.on('interactionCreate', async interaction => {
 
 client.on('interactionCreate', async interaction => {
   if (!interaction.isStringSelectMenu() && !interaction.isButton()) return;
-  if (TARGET_GUILD_ID && interaction.guildId !== TARGET_GUILD_ID) return;
+  if (interaction.guildId !== TARGET_GUILD_ID) return;
 
   const isManager = assertManagerOnly(interaction);
   const isManagedComponent =
@@ -737,5 +763,4 @@ client.on('interactionCreate', async interaction => {
 });
 
 client.login(TOKEN);
-
 
