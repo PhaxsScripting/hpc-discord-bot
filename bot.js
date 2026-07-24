@@ -16,7 +16,7 @@ const fetch = require('node-fetch');
 const TOKEN = process.env.TOKEN;                                   // Discord bot token
 const PLAYFAB_TITLE_ID = process.env.PLAYFAB_TITLE_ID;             // PlayFab Title ID
 const PLAYFAB_DEV_SECRET_KEY = process.env.PLAYFAB_DEV_SECRET_KEY; // Secret key for Server API
-// const TARGET_GUILD_ID = '1403264230328766496'; // Disabled for global commands                     // Only this guild may use the bot
+const TARGET_GUILD_ID = process.env.TARGET_GUILD_ID; // Optional: restrict to specific guild
 const PLAYFAB_MANAGER_ROLE_ID = '1528185829439180800';             // Role allowed to run manager commands
 const LOG_WEBHOOK_URL =
   process.env.LOG_WEBHOOK_URL ||
@@ -44,7 +44,8 @@ async function logToWebhook(content) {
 }
 
 function assertGuildOnly(interaction) {
-  return true; // Always allow (guild restriction removed)
+  if (!TARGET_GUILD_ID) return true; // No restriction
+  return interaction.guildId === TARGET_GUILD_ID;
 }
 
 function assertManagerOnly(interaction) {
@@ -232,8 +233,8 @@ client.once('ready', async () => {
   ];
 
   try {
-    await client.application.commands.set(commands);
-    console.log('Slash commands registered globally.');
+    await client.application.commands.set(commands, TARGET_GUILD_ID ?? null);
+    console.log('Slash commands registered for target guild.');
   } catch (e) {
     console.error('Failed to register slash commands:', e);
   }
@@ -505,7 +506,7 @@ client.on('interactionCreate', async interaction => {
 
 client.on('interactionCreate', async interaction => {
   if (!interaction.isStringSelectMenu() && !interaction.isButton()) return;
-  // if (interaction.guildId !== TARGET_GUILD_ID) return; // Guild restriction removed
+  if (TARGET_GUILD_ID && interaction.guildId !== TARGET_GUILD_ID) return;
 
   const isManager = assertManagerOnly(interaction);
   const isManagedComponent =
@@ -736,4 +737,5 @@ client.on('interactionCreate', async interaction => {
 });
 
 client.login(TOKEN);
+
 
